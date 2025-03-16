@@ -23,6 +23,7 @@
 #include<chrono>
 
 #include<ros/ros.h>
+#include <geometry_msgs/PoseStamped.h>
 #include <cv_bridge/cv_bridge.h>
 #include <message_filters/subscriber.h>
 #include <message_filters/time_synchronizer.h>
@@ -33,6 +34,8 @@
 #include"../../../include/System.h"
 
 using namespace std;
+
+ros::Publisher pose_pub;
 
 class ImageGrabber
 {
@@ -57,17 +60,19 @@ int main(int argc, char **argv)
     }    
 
     // Create SLAM system. It initializes all system threads and gets ready to process frames.
-    ORB_SLAM3::System SLAM(argv[1],argv[2],ORB_SLAM3::System::RGBD,true);
+    ORB_SLAM3::System SLAM(argv[1],argv[2],ORB_SLAM3::System::RGBD,false);
 
     ImageGrabber igb(&SLAM);
 
     ros::NodeHandle nh;
 
-    message_filters::Subscriber<sensor_msgs::Image> rgb_sub(nh, "/camera/rgb/image_raw", 100);
-    message_filters::Subscriber<sensor_msgs::Image> depth_sub(nh, "camera/depth_registered/image_raw", 100);
+    message_filters::Subscriber<sensor_msgs::Image> rgb_sub(nh, "/camera/color/image_raw", 100);
+    message_filters::Subscriber<sensor_msgs::Image> depth_sub(nh, "/camera/depth/image_raw", 100);
     typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::Image> sync_pol;
     message_filters::Synchronizer<sync_pol> sync(sync_pol(10), rgb_sub,depth_sub);
     sync.registerCallback(boost::bind(&ImageGrabber::GrabRGBD,&igb,_1,_2));
+
+    pose_pub = nh.advertise<geometry_msgs::PoseStamped>("/ORB_SLAM3/CameraPose", 1);
 
     ros::spin();
 
@@ -106,7 +111,20 @@ void ImageGrabber::GrabRGBD(const sensor_msgs::ImageConstPtr& msgRGB,const senso
         ROS_ERROR("cv_bridge exception: %s", e.what());
         return;
     }
-    mpSLAM->TrackRGBD(cv_ptrRGB->image,cv_ptrD->image,cv_ptrRGB->header.stamp.toSec());
+    Sophus::SE3f pose = mpSLAM->TrackRGBD(cv_ptrRGB->image,cv_ptrD->image,cv_ptrRGB->header.stamp.toSec());
+
+    // Publish pose
+    geometry_msgs::PoseStamped pose_msg;
+    pose_msg.header.stamp = msgRGB->header.stamp;
+    pose_msg.pose.position.x = pose.translation()[0];
+    pose_msg.pose.position.y = pose.translation()[1];
+    pose_msg.pose.position.z = pose.translation()[2];
+    Eigen::Quaternionf q = pose.unit_quaternion();
+    pose_msg.pose.orientation.x = q.x();
+    pose_msg.pose.orientation.y = q.y();
+    pose_msg.pose.orientation.z = q.z();
+    pose_msg.pose.orientation.w = q.w();
+    pose_pub.publish(pose_msg);
 }
 
 
